@@ -6,12 +6,18 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/telegram", "/setup-webhook"]
+    "run_worker_first": ["/api/*", "/media/*", "/telegram", "/setup-webhook"]
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "targetlybot-db"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PHOTOS",
+      "bucket_name": "targetlybot-photos"
     }
   ]
 }
