@@ -1,50 +1,77 @@
-import 'dotenv/config';
-import { Bot, InlineKeyboard } from 'grammy';
-import { createStore } from './db.js';
+const API = 'https://api.telegram.org/bot';
 
-const token = process.env.BOT_TOKEN;
-if (!token) throw new Error('BOT_TOKEN is required');
-const ownerId = Number(process.env.OWNER_ID || 0);
-const viewers = new Set((process.env.VIEWER_IDS || '').split(',').map(x => Number(x.trim())).filter(Boolean));
-if (ownerId) viewers.add(ownerId);
-const store = createStore(process.env.DB_PATH || './data/targetly.db');
-const bot = new Bot(token);
-const isOwner = ctx => ctx.from?.id === ownerId;
-const canView = ctx => viewers.size === 0 || viewers.has(ctx.from?.id);
-
-function menu(owner) {
-  const k = new InlineKeyboard().text('🔎 البحث','search').text('🏪 المستهدفون','targets').row().text('🎯 آليات الاستهداف','methods').text('🏷️ التصنيفات','tags');
-  if (owner) k.row().text('➕ إضافة مستهدف','add');
-  return k;
+async function telegram(env, method, body) {
+  return fetch(`${API}${env.BOT_TOKEN}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
 }
 
-bot.command('start', async ctx => {
-  if (!canView(ctx)) return ctx.reply('هذا البوت خاص.');
-  const { total } = store.stats();
-  await ctx.reply(`🎯 TargetlyBot\n\nمكتبة لتنظيم والبحث عن المستهدفين.\nالمحفوظ حاليًا: ${total}`, { reply_markup: menu(isOwner(ctx)) });
-});
-bot.command('id', ctx => ctx.reply(`Telegram ID: ${ctx.from.id}`));
-bot.command('search', async ctx => {
-  if (!canView(ctx)) return;
-  const q = ctx.match?.trim();
-  if (!q) return ctx.reply('استخدم: /search اسم المطعم');
-  const rows = store.search(q);
-  if (!rows.length) return ctx.reply('ما لقيت نتائج.');
-  await ctx.reply(rows.map(r => `#${r.id} • ${r.name}\n📍 ${r.city || '-'} • ${r.category || '-'}\n🏷️ ${r.tags || '-'}`).join('\n\n'));
-});
-bot.command('add', async ctx => {
-  if (!isOwner(ctx)) return ctx.reply('الإضافة متاحة للمالك فقط.');
-  const raw = ctx.match?.trim();
-  if (!raw) return ctx.reply('استخدم:\n/add الاسم | المدينة | التصنيف | الرابط | الوسوم | الملاحظات');
-  const [name,city='',category='',url='',tags='',notes=''] = raw.split('|').map(x => x.trim());
-  if (!name) return ctx.reply('اسم المستهدف مطلوب.');
-  const r = store.add({name,city,category,url,tags,notes});
-  await ctx.reply(`✅ تم حفظ #${r.id}\n${r.name}\n📍 ${r.city || '-'}\n🏷️ ${r.tags || '-'}`);
-});
-bot.callbackQuery('targets', async ctx => { await ctx.answerCallbackQuery(); const rows=store.list(); await ctx.reply(rows.length ? rows.map(r=>`#${r.id} • ${r.name} — ${r.city || '-'}`).join('\n') : 'لا يوجد مستهدفون حتى الآن.'); });
-bot.callbackQuery('search', async ctx => { await ctx.answerCallbackQuery(); await ctx.reply('🔎 اكتب:\n/search اسم المطعم'); });
-bot.callbackQuery('add', async ctx => { await ctx.answerCallbackQuery(); if (isOwner(ctx)) await ctx.reply('➕ أرسل:\n/add الاسم | المدينة | التصنيف | الرابط | الوسوم | الملاحظات'); });
-bot.callbackQuery('methods', async ctx => { await ctx.answerCallbackQuery(); await ctx.reply('🎯 آليات الاستهداف\nقريبًا: مكتبة قواعد وأساليب الاستهداف.'); });
-bot.callbackQuery('tags', async ctx => { await ctx.answerCallbackQuery(); await ctx.reply('🏷️ التصنيفات\nقريبًا: تصفح المستهدفين حسب الوسوم.'); });
-bot.catch(err => console.error('Bot error:', err.error));
-bot.start({ onStart: info => console.log(`@${info.username} is running`) });
+const buttons = owner => ({ inline_keyboard: [
+  [{text:'🔎 البحث',callback_data:'search'},{text:'🏪 المستهدفون',callback_data:'targets'}],
+  [{text:'🎯 آليات الاستهداف',callback_data:'methods'},{text:'🏷️ التصنيفات',callback_data:'tags'}],
+  ...(owner ? [[{text:'➕ إضافة مستهدف',callback_data:'add'}]] : [])
+]});
+
+function allowed(env, id) {
+  const ids = String(env.VIEWER_IDS || '').split(',').map(x=>x.trim()).filter(Boolean);
+  return !ids.length || String(id) === String(env.OWNER_ID) || ids.includes(String(id));
+}
+
+async function send(env, chatId, text, reply_markup) {
+  return telegram(env, 'sendMessage', { chat_id: chatId, text, reply_markup });
+}
+
+async function handleMessage(message, env) {
+  const chatId = message.chat.id;
+  const userId = message.from?.id;
+  const text = message.text || '';
+  if (text === '/id') return send(env, chatId, `Telegram ID: ${userId}`);
+  if (!allowed(env, userId)) return send(env, chatId, 'هذا البوت خاص.');
+
+  if (text === '/start') {
+    const row = await env.DB.prepare('SELECT COUNT(*) AS total FROM targets').first();
+    return send(env, chatId, `🎯 TargetlyBot\n\nمكتبة لتنظيم والبحث عن المستهدفين.\nالمحفوظ حاليًا: ${row?.total || 0}`, buttons(String(userId)===String(env.OWNER_ID)));
+  }
+  if (text.startsWith('/search ')) {
+    const q = `%${text.slice(8).trim()}%`;
+    const { results=[] } = await env.DB.prepare('SELECT * FROM targets WHERE name LIKE ? OR city LIKE ? OR category LIKE ? OR tags LIKE ? OR notes LIKE ? ORDER BY updated_at DESC LIMIT 20').bind(q,q,q,q,q).all();
+    return send(env, chatId, results.length ? results.map(r=>`#${r.id} • ${r.name}\n📍 ${r.city || '-'} • ${r.category || '-'}\n🏷️ ${r.tags || '-'}`).join('\n\n') : 'ما لقيت نتائج.');
+  }
+  if (text.startsWith('/add ')) {
+    if (String(userId)!==String(env.OWNER_ID)) return send(env,chatId,'الإضافة متاحة للمالك فقط.');
+    const [name,city='',category='',url='',tags='',notes=''] = text.slice(5).split('|').map(x=>x.trim());
+    if (!name) return send(env,chatId,'اسم المستهدف مطلوب.');
+    const result = await env.DB.prepare('INSERT INTO targets (name,city,category,url,tags,notes,status) VALUES (?,?,?,?,?,?,?) RETURNING id').bind(name,city,category,url,tags,notes,'new').first();
+    return send(env,chatId,`✅ تم حفظ #${result.id}\n${name}\n📍 ${city || '-'}\n🏷️ ${tags || '-'}`);
+  }
+  return send(env,chatId,'استخدم /start لفتح المكتبة.');
+}
+
+async function handleCallback(q, env) {
+  await telegram(env,'answerCallbackQuery',{callback_query_id:q.id});
+  const chatId=q.message.chat.id, userId=q.from.id;
+  if (!allowed(env,userId)) return;
+  if(q.data==='search') return send(env,chatId,'🔎 اكتب:\n/search اسم المطعم');
+  if(q.data==='add') return String(userId)===String(env.OWNER_ID) ? send(env,chatId,'➕ أرسل:\n/add الاسم | المدينة | التصنيف | الرابط | الوسوم | الملاحظات') : null;
+  if(q.data==='methods') return send(env,chatId,'🎯 آليات الاستهداف\nقريبًا: مكتبة قواعد وأساليب الاستهداف.');
+  if(q.data==='tags') return send(env,chatId,'🏷️ التصنيفات\nقريبًا: تصفح المستهدفين حسب الوسوم.');
+  if(q.data==='targets') {
+    const {results=[]}=await env.DB.prepare('SELECT * FROM targets ORDER BY id DESC LIMIT 20').all();
+    return send(env,chatId,results.length?results.map(r=>`#${r.id} • ${r.name} — ${r.city || '-'}`).join('\n'):'لا يوجد مستهدفون حتى الآن.');
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const url=new URL(request.url);
+    if(request.method==='GET' && url.pathname==='/') return new Response('TargetlyBot is running on Cloudflare Workers.');
+    if(request.method!=='POST' || url.pathname!=='/telegram') return new Response('Not found',{status:404});
+    if(env.WEBHOOK_SECRET && request.headers.get('X-Telegram-Bot-Api-Secret-Token')!==env.WEBHOOK_SECRET) return new Response('Unauthorized',{status:401});
+    const update=await request.json();
+    if(update.message) await handleMessage(update.message,env);
+    if(update.callback_query) await handleCallback(update.callback_query,env);
+    return new Response('ok');
+  }
+};
