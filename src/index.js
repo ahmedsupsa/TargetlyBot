@@ -65,13 +65,41 @@ async function handleCallback(q, env) {
 
 export default {
   async fetch(request, env) {
-    const url=new URL(request.url);
-    if(request.method==='GET' && url.pathname==='/') return new Response('TargetlyBot is running on Cloudflare Workers.');
-    if(request.method!=='POST' || url.pathname!=='/telegram') return new Response('Not found',{status:404});
-    if(env.WEBHOOK_SECRET && request.headers.get('X-Telegram-Bot-Api-Secret-Token')!==env.WEBHOOK_SECRET) return new Response('Unauthorized',{status:401});
-    const update=await request.json();
-    if(update.message) await handleMessage(update.message,env);
-    if(update.callback_query) await handleCallback(update.callback_query,env);
+    const url = new URL(request.url);
+
+    if (request.method === 'GET' && url.pathname === '/') {
+      return new Response('TargetlyBot is running on Cloudflare Workers.');
+    }
+
+    if (request.method === 'GET' && url.pathname === '/setup-webhook') {
+      if (!env.BOT_TOKEN || !env.WEBHOOK_SECRET) {
+        return new Response('Missing BOT_TOKEN or WEBHOOK_SECRET in Cloudflare.', { status: 500 });
+      }
+      const webhookUrl = `${url.origin}/telegram`;
+      const response = await telegram(env, 'setWebhook', {
+        url: webhookUrl,
+        secret_token: env.WEBHOOK_SECRET,
+        allowed_updates: ['message', 'callback_query'],
+        drop_pending_updates: true
+      });
+      const data = await response.json();
+      if (!data.ok) {
+        return Response.json({ ok: false, description: data.description || 'Telegram rejected webhook setup.' }, { status: 502 });
+      }
+      return new Response('✅ Telegram webhook connected. You can now open the bot and send /start.');
+    }
+
+    if (request.method !== 'POST' || url.pathname !== '/telegram') {
+      return new Response('Not found', { status: 404 });
+    }
+
+    if (env.WEBHOOK_SECRET && request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.WEBHOOK_SECRET) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+
+    const update = await request.json();
+    if (update.message) await handleMessage(update.message, env);
+    if (update.callback_query) await handleCallback(update.callback_query, env);
     return new Response('ok');
   }
 };
