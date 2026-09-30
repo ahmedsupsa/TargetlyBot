@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS targets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  city TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'new',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_targets_name ON targets(name);
+CREATE INDEX IF NOT EXISTS idx_targets_city ON targets(city);
+CREATE INDEX IF NOT EXISTS idx_targets_status ON targets(status);
